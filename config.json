@@ -1,0 +1,99 @@
+{
+  "calibration": false,
+  "calibration_positions": [
+    [100, 100, 300, 300],
+    [900, 100, 1100, 300],
+    [100, 400, 300, 600],
+    [900, 400, 1100, 600],
+    [500, 100, 700, 300],
+    [500, 400, 700, 600],
+    [100, 600, 300, 800],
+    [900, 600, 1100, 800]
+  ],
+  "camera_params": {
+    "fx": 750.890897164074,
+    "fy": 754.0995035987871,
+    "cx": 608.3178551290766,
+    "cy": 397.9051054614818
+  },
+  "tag": {
+    "size": 0.165,
+    "family": "tag36h11"
+  },
+  "pipeline": {
+    "fps_target": 30,
+    "display_interval": 20
+  },
+  "map": {
+    "scale": 100,  
+    "width": 800,  
+    "height": 600,
+    "1": [0, 0],  
+    "2": [2, 0]   
+  },
+  "detector": {
+    "nthreads": 2,
+    "quad_decimate": 4.0,
+    "quad_sigma": 0.0,
+    "refine_edges": 1,
+    "decode_sharpening": 0.25
+  },
+  "controls": {
+    "exposure": 0,
+    "iso": 0,
+    "brightness": 0,
+    "contrast": 0,
+    "saturation": 0,
+    "sharpness": 0
+  },
+  "key_bindings": {
+    "t": [
+      "exposure",
+      1000
+    ],
+    "g": [
+      "exposure",
+      -1000
+    ],
+    "y": [
+      "iso",
+      100
+    ],
+    "h": [
+      "iso",
+      -100
+    ],
+    "q": [
+      "brightness",
+      1
+    ],
+    "a": [
+      "brightness",
+      -1
+    ],
+    "w": [
+      "contrast",
+      1
+    ],
+    "s": [
+      "contrast",
+      -1
+    ],
+    "e": [
+      "saturation",
+      1
+    ],
+    "d": [
+      "saturation",
+      -1
+    ],
+    "r": [
+      "sharpness",
+      1
+    ],
+    "f": [
+      "sharpness",
+      -1
+    ]
+  }
+}
