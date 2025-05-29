@@ -1,4 +1,5 @@
-import numpy as np  # Added import
+import numpy as np
+import cv2
 from depthai import Device, Pipeline, node, CameraBoardSocket, ColorCameraProperties, CameraControl
 from collections import deque
 
@@ -8,8 +9,15 @@ class CameraManager:
         self.device = None
         self.cam_node = None
         self.control_queue = None
-        self.frame_queue = deque(maxlen=10)
+        self.frame_queue = deque(maxlen=1)
         self.fps_target = config["pipeline"]["fps_target"]
+        self.camera_params = config["camera_params"]
+        self.dist_coeffs = np.array([0.0, 0.0, 0.0, 0.0])  # k1, k2, p1, p2
+        self.camera_matrix = np.array([
+            [self.camera_params['fx'], 0, self.camera_params['cx']],
+            [0, self.camera_params['fy'], self.camera_params['cy']],
+            [0, 0, 1]
+        ], dtype=np.float64)
         self.setup_pipeline()
 
     def setup_pipeline(self):
@@ -20,7 +28,7 @@ class CameraManager:
         control_in.setStreamName("control")
 
         self.cam_node.setBoardSocket(CameraBoardSocket.CAM_A)
-        self.cam_node.setResolution(ColorCameraProperties.SensorResolution.THE_800_P)
+        self.cam_node.setResolution(ColorCameraProperties.SensorResolution.THE_720_P)  # Changed to 720p
         self.cam_node.setFps(self.fps_target)
         self.cam_node.setInterleaved(False)
         self.cam_node.setColorOrder(ColorCameraProperties.ColorOrder.BGR)
@@ -48,6 +56,7 @@ class CameraManager:
             frame = in_frame.getCvFrame()
             if frame.shape[2] != 3 or frame.dtype != np.uint8:
                 frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_NV12)
+            frame = cv2.undistort(frame, self.camera_matrix, self.dist_coeffs)
             return frame
         return None
 

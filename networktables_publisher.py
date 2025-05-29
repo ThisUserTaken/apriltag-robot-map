@@ -1,6 +1,6 @@
 import logging
 import time
-import numpy as np  # Added import
+import numpy as np
 from networktables import NetworkTables
 
 class NetworkTablesPublisher:
@@ -59,28 +59,25 @@ class NetworkTablesPublisher:
         self.logger.debug(f"Frame {frame_count}: Published TagIDs: {tag_ids}")
 
     def publish_robot_location(self, position, roll, pitch, yaw, frame_count):
-        """Publish robot position and orientation to NetworkTables."""
+        """Publish robot position (2D: x, z) to NetworkTables."""
         if not NetworkTables.isConnected():
             self.logger.warning(f"Frame {frame_count}: Not connected, skipping robot publish")
-            return
+            return False
         prefix = "RobotPose"
-        if position is not None:
-            robot_x, robot_y, robot_z = position
-            self.table.putNumber(f"{prefix}/x", robot_x)
-            self.table.putNumber(f"{prefix}/y", robot_y)
-            self.table.putNumber(f"{prefix}/z", robot_z)
-            self.table.putNumber(f"{prefix}/roll", np.degrees(roll) if not np.isnan(roll) else float('nan'))
-            self.table.putNumber(f"{prefix}/pitch", np.degrees(pitch) if not np.isnan(pitch) else float('nan'))
-            self.table.putNumber(f"{prefix}/yaw", np.degrees(yaw) if not np.isnan(yaw) else float('nan'))
-            self.logger.debug(f"Frame {frame_count}: Published RobotPose: x={robot_x:.3f}, y={robot_y:.3f}, z={robot_z:.3f}")
-        else:
-            self.table.putNumber(f"{prefix}/x", float('nan'))
-            self.table.putNumber(f"{prefix}/y", float('nan'))
-            self.table.putNumber(f"{prefix}/z", float('nan'))
-            self.table.putNumber(f"{prefix}/roll", float('nan'))
-            self.table.putNumber(f"{prefix}/pitch", float('nan'))
-            self.table.putNumber(f"{prefix}/yaw", float('nan'))
-            self.logger.debug(f"Frame {frame_count}: Published RobotPose: No valid position")
+        try:
+            if position is not None:
+                robot_x, robot_z = position
+                self.table.putNumber(f"{prefix}/x", float(robot_x))  # Ensure float
+                self.table.putNumber(f"{prefix}/z", float(robot_z))
+                self.logger.debug(f"Frame {frame_count}: Published RobotPose: x={robot_x:.3f}, z={robot_z:.3f}")
+            else:
+                self.table.putNumber(f"{prefix}/x", float('nan'))
+                self.table.putNumber(f"{prefix}/z", float('nan'))
+                self.logger.debug(f"Frame {frame_count}: Published RobotPose: No valid position")
+            return True
+        except Exception as e:
+            self.logger.error(f"Frame {frame_count}: Failed to publish RobotPose: {e}")
+            return False
 
     def shutdown(self):
         self.logger.info("Shutting down NetworkTables")

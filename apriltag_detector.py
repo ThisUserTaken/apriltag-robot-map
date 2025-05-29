@@ -5,10 +5,9 @@ from collections import deque
 import json
 import time
 import threading
-from networktables import NetworkTables  # Added import
+from networktables import NetworkTables
 from utils import detect_blur
 
-# Delayed imports to avoid circular dependencies
 class AprilTagDetector:
     def __init__(self, config_file="config.json"):
         try:
@@ -31,7 +30,7 @@ class AprilTagDetector:
             self.detector = Detector(
                 families=self.tag_family,
                 nthreads=self.config["detector"]["nthreads"],
-                quad_decimate=2.0,
+                quad_decimate=self.config["detector"]["quad_decimate"],
                 quad_sigma=self.config["detector"]["quad_sigma"],
                 refine_edges=self.config["detector"]["refine_edges"],
                 decode_sharpening=self.config["detector"]["decode_sharpening"]
@@ -76,7 +75,7 @@ class AprilTagDetector:
         self.prev_detections = {}
         self.running = False
         self.thread = None
-        self.frame_queue = deque(maxlen=10)
+        self.frame_queue = deque(maxlen=1)
 
     def start(self):
         self.camera_manager.start()
@@ -98,6 +97,7 @@ class AprilTagDetector:
             start_time = time.time()
             frame = self.camera_manager.get_frame()
             if frame is not None:
+                self.frame_queue.clear()
                 if not self.detect_blur(frame):
                     self.frame_queue.append(frame)
                     self.frame_count += 1
@@ -146,7 +146,7 @@ class AprilTagDetector:
                     ret, mtx, dist, _, _ = cv2.calibrateCamera(
                         self.calibration_data['obj_points'], self.calibration_data['img_points'],
                         gray.shape[::-1], None, None)
-                    if ret:
+                    if ret < 1:
                         self.camera_params = {
                             'fx': mtx[0, 0], 'fy': mtx[1, 1], 'cx': mtx[0, 2], 'cy': mtx[1, 2]
                         }
@@ -154,8 +154,10 @@ class AprilTagDetector:
                         self.config["camera_params"] = self.camera_params
                         with open(self.config_file, 'w') as f:
                             json.dump(self.config, f, indent=2)
-                        print("Calibration complete, updated config.json")
+                        print(f"Calibration complete, reprojection error: {ret:.3f}, updated config.json")
                         self.calibration_mode = False
+                    else:
+                        print(f"Calibration failed, reprojection error too high: {ret:.3f}")
                     self.current_position_idx = 0
                     self.calibration_data = {'obj_points': [], 'img_points': []}
             else:
@@ -171,35 +173,31 @@ class AprilTagDetector:
         self.nt_publisher.publish_tag_data(detections, frame_count)
 
         robot_positions = []
-        roll, pitch, yaw = float('nan'), float('nan'), float('nan')
         for det in detections:
             tag_id = det.tag_id
             prob = 1.0 - det.decision_margin / 100.0
             print(f"Tag {tag_id} prob: {prob:.2f}")
-            if tag_id in self.tag_locations and prob >= 0.5:  # Lowered threshold
+            print(f"Tag {tag_id} relative pose: x={pose_t[0]:.3f}m, z={pose_t[2]:.3f}m")
+            if tag_id in self.tag_locations and prob >= 0.2:
                 pose_t = det.pose_t.flatten()
-                rel_x, rel_y, rel_z = pose_t[0], pose_t[1], pose_t[2]
-                global_x, global_y, global_z = self.tag_locations[tag_id]
+                rel_x, rel_z = pose_t[0], pose_t[2]
+                global_coords = self.tag_locations[tag_id]
+                global_x, global_z = global_coords[0], global_coords[1]  # Explicit 2D unpacking
                 robot_x = global_x - rel_x
-                robot_y = global_y - rel_y
                 robot_z = global_z - rel_z
-                robot_positions.append([robot_x, robot_y, robot_z])
-                R = det.pose_R
-                pitch = np.arctan2(-R[2, 0], np.sqrt(R[0, 0]**2 + R[1, 0]**2))
-                yaw = np.arctan2(R[1, 0], R[0, 0])
-                roll = np.arctan2(R[2, 1], R[2, 2])
+                robot_positions.append([robot_x, robot_z])
 
         if robot_positions:
             robot_pos = np.mean(robot_positions, axis=0)
             self.robot_position_history.append(robot_pos)
             smoothed_pos = np.mean(self.robot_position_history, axis=0)
-            self.robot_position = (smoothed_pos[0], smoothed_pos[1], smoothed_pos[2])
-            print(f"Robot position: x={self.robot_position[0]:.3f}m, y={self.robot_position[1]:.3f}m, z={self.robot_position[2]:.3f}m")
+            self.robot_position = (smoothed_pos[0], smoothed_pos[1])
+            print(f"Robot position: x={self.robot_position[0]:.3f}m, z={self.robot_position[1]:.3f}m")
         else:
             print("No valid tag detections for robot position")
             self.robot_position = None
 
-        self.nt_publisher.publish_robot_location(self.robot_position, roll, pitch, yaw, frame_count)
+        self.nt_publisher.publish_robot_location(self.robot_position, 0, 0, 0, frame_count)
         print(f"Frame {frame_count}: NetworkTables connected: {NetworkTables.isConnected()}")
 
     def draw_map(self):
@@ -281,13 +279,8 @@ class AprilTagDetector:
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                         pose_t = det.pose_t.flatten()
-                        R = det.pose_R
-                        pitch = np.arctan2(-R[2, 0], np.sqrt(R[0, 0]**2 + R[1, 0]**2))
-                        yaw = np.arctan2(R[1, 0], R[0, 0])
-                        roll = np.arctan2(R[2, 1], R[2, 2])
-                        print(f"Tag ID: {tag_id}, X: {pose_t[0]:.3f}m, Y: {pose_t[1]:.3f}m, Z: {pose_t[2]:.3f}m, "
-                              f"Depth: {depth:.3f}m, Pitch: {np.degrees(pitch):.1f}°, Yaw: {np.degrees(yaw):.1f}°, "
-                              f"Roll: {np.degrees(roll):.1f}°")
+                        print(f"Tag ID: {tag_id}, X: {pose_t[0]:.3f}m, Z: {pose_t[2]:.3f}m, "
+                              f"Depth: {depth:.3f}m")
                     setattr(det, 'last_seen', time.time())
 
         if not self.headless and self.frame_count % self.display_frame_interval == 0:
