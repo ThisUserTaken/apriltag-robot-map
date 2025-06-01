@@ -27,7 +27,7 @@ class NetworkTablesPublisher:
         self.logger.error(f"Failed to connect to NetworkTables after {max_retries} attempts")
         self.table = NetworkTables.getTable(self.table_name)
 
-    def publish_tag_data(self, detections, frame_count):
+    def publish_tag_data(self, detections, frame_count, tag_yaws):
         """Publish detailed tag data to NetworkTables."""
         if not NetworkTables.isConnected():
             self.logger.warning(f"Frame {frame_count}: Not connected, skipping tag publish")
@@ -41,7 +41,7 @@ class NetworkTablesPublisher:
             corners = det.corners.flatten().tolist()
             R = det.pose_R
             pitch = np.arctan2(-R[2, 0], np.sqrt(R[0, 0]**2 + R[1, 0]**2))
-            yaw = np.arctan2(R[1, 0], R[0, 0])
+            yaw = tag_yaws.get(tag_id, 0.0)  # Use solvePnP yaw
             roll = np.arctan2(R[2, 1], R[2, 2])
 
             tag_prefix = f"Tag_{tag_id}"
@@ -51,15 +51,15 @@ class NetworkTablesPublisher:
             self.table.putNumberArray(f"{tag_prefix}/Corners", corners)
             self.table.putNumber(f"{tag_prefix}/Roll", np.degrees(roll))
             self.table.putNumber(f"{tag_prefix}/Pitch", np.degrees(pitch))
-            self.table.putNumber(f"{tag_prefix}/Yaw", np.degrees(yaw))
-            self.logger.debug(f"Frame {frame_count}: Published Tag {tag_id}: Prob={prob:.2f}, Depth={depth:.3f}m")
+            self.table.putNumber(f"{tag_prefix}/Yaw", yaw)
+            self.logger.debug(f"Frame {frame_count}: Published Tag {tag_id}: Prob={prob:.2f}, Depth={depth:.3f}m, Yaw={yaw:.1f}°")
 
         tag_ids = [det.tag_id for det in detections]
         self.table.putNumberArray("TagIDs", tag_ids)
         self.logger.debug(f"Frame {frame_count}: Published TagIDs: {tag_ids}")
 
-    def publish_robot_location(self, position, roll, pitch, yaw, frame_count):
-        """Publish robot position (2D: x, z) to NetworkTables."""
+    def publish_robot_location(self, position, yaw, frame_count):
+        """Publish robot position (2D: x, z) and yaw to NetworkTables."""
         if not NetworkTables.isConnected():
             self.logger.warning(f"Frame {frame_count}: Not connected, skipping robot publish")
             return False
@@ -67,12 +67,14 @@ class NetworkTablesPublisher:
         try:
             if position is not None:
                 robot_x, robot_z = position
-                self.table.putNumber(f"{prefix}/x", float(robot_x))  # Ensure float
+                self.table.putNumber(f"{prefix}/x", float(robot_x))
                 self.table.putNumber(f"{prefix}/z", float(robot_z))
-                self.logger.debug(f"Frame {frame_count}: Published RobotPose: x={robot_x:.3f}, z={robot_z:.3f}")
+                self.table.putNumber(f"{prefix}/yaw", float(yaw) if yaw is not None else float('nan'))
+                self.logger.debug(f"Frame {frame_count}: Published RobotPose: x={robot_x:.3f}, z={robot_z:.3f}, yaw={yaw:.1f}°")
             else:
                 self.table.putNumber(f"{prefix}/x", float('nan'))
                 self.table.putNumber(f"{prefix}/z", float('nan'))
+                self.table.putNumber(f"{prefix}/yaw", float('nan'))
                 self.logger.debug(f"Frame {frame_count}: Published RobotPose: No valid position")
             return True
         except Exception as e:

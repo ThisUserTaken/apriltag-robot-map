@@ -43,6 +43,16 @@
     "16": [1.65, 1.2],
     "17": [-1.35, -2.9]
   },
+  "tag_rotations": {
+    "6": 180,
+    "9": 180,
+    "10": 180,
+    "11": 90,
+    "12": -90,
+    "13": -90,
+    "15": 0,
+    "17": 90
+  },
   "networktables": {
     "server": "10.92.2.2",
     "table": "SmartDashboard",
@@ -50,10 +60,10 @@
   },
   "detector": {
     "nthreads": 1,
-    "quad_decimate": 1.0,
-    "quad_sigma": 0.8,
+    "quad_decimate": 1.5,
+    "quad_sigma": 0.0,
     "refine_edges": 1,
-    "decode_sharpening": 0.75
+    "decode_sharpening": 0.5
   },
   "controls": {
     "exposure": 0,

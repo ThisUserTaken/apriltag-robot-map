@@ -3,8 +3,8 @@ from networktables import NetworkTables
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
-NetworkTables.initialize(server="10.92.02.2")
-table = NetworkTables.getTable("Robot")
+NetworkTables.initialize(server="10.92.2.2")
+table = NetworkTables.getTable("SmartDashboard")
 
 for i in range(10):
     table.putNumber("test_x", i)
