@@ -14,6 +14,7 @@ except ImportError as e:
     raise
 
 def main():
+    detector = None
     try:
         detector = AprilTagDetector(config_file="config.json")
         detector.start()
@@ -23,7 +24,8 @@ def main():
         print(f"Error in main: {e}")
         raise
     finally:
-        detector.stop()
+        if detector is not None:
+            detector.stop()
 
 if __name__ == "__main__":
     main()

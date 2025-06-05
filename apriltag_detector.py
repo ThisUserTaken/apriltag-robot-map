@@ -20,59 +20,61 @@ class AprilTagDetector:
             self.logger.error(f"Error loading config: {e}")
             raise
 
-        self.calibration_mode = self.config["calibration"]
-        self.calibration_positions = [tuple(pos) for pos in self.config["calibration_positions"]]
+        self.calibration_mode = self.config.get("calibration", False)
+        self.calibration_positions = [tuple(pos) for pos in self.config.get("calibration_positions", [])]
         self.current_position_idx = 0
         self.checkerboard_size = (6, 8)
         self.calibration_data = {'obj_points': [], 'img_points': []}
         self.config_file = config_file
 
-        self.tag_size = self.config["tag"]["size"]
-        self.tag_family = self.config["tag"]["family"]
+        self.tag_size = self.config.get("tag", {}).get("size", 0.067)
+        self.tag_family = self.config.get("tag", {}).get("family", "tag36h11")
         try:
             self.detector = Detector(
                 families=self.tag_family,
-                nthreads=self.config["detector"]["nthreads"],
-                quad_decimate=self.config["detector"]["quad_decimate"],
-                quad_sigma=self.config["detector"]["quad_sigma"],
-                refine_edges=self.config["detector"]["refine_edges"],
-                decode_sharpening=self.config["detector"]["decode_sharpening"]
+                nthreads=self.config.get("detector", {}).get("nthreads", 1),
+                quad_decimate=self.config.get("detector", {}).get("quad_decimate", 1.5),
+                quad_sigma=self.config.get("detector", {}).get("quad_sigma", 0.0),
+                refine_edges=self.config.get("detector", {}).get("refine_edges", 1),
+                decode_sharpening=self.config.get("detector", {}).get("decode_sharpening", 0.5)
             )
         except Exception as e:
             self.logger.error(f"Error initializing detector: {e}")
             raise
 
-        self.camera_params = self.config["camera_params"]
+        self.camera_params = self.config.get("camera_params", {})
         self.camera_matrix = np.array([
-            [self.camera_params['fx'], 0, self.camera_params['cx']],
-            [0, self.camera_params['fy'], self.camera_params['cy']],
+            [self.camera_params.get('fx', 750.89), 0, self.camera_params.get('cx', 608.32)],
+            [0, self.camera_params.get('fy', 754.10), self.camera_params.get('cy', 397.91)],
             [0, 0, 1]
         ], dtype=np.float64)
         self.dist_coeffs = np.array([-0.1, 0.05, 0.001, 0.001])
 
-        self.map_scale = self.config["map"]["scale"]
-        self.map_width = self.config["map"]["width"]
-        self.map_height = self.config["map"]["height"]
+        self.map_scale = self.config.get("map", {}).get("scale", 100)
+        self.map_width = self.config.get("map", {}).get("width", 800)
+        self.map_height = self.config.get("map", {}).get("height", 600)
         self.tag_positions = {}
         self.tag_yaws = {}
-        self.tag_locations = {int(k): v for k, v in self.config["tag_locations"].items()}
+        self.tag_locations = {int(k): v for k, v in self.config.get("tag_locations", {}).items()}
         self.tag_rotations = {int(k): float(v) for k, v in self.config.get("tag_rotations", {}).items()}
         self.robot_position = None
         self.robot_yaw = None
         self.robot_position_history = deque(maxlen=5)
+        self.reprojection_error_threshold = 5.0
+        self.valid_detections = []  # Store valid detections for map rendering
 
-        self.display_interval_s = self.config["pipeline"].get("display_interval_s", 0.5)
-        self.display_frame_interval = self.config["pipeline"].get("display_frame_interval", 5)
-        self.headless = self.config["pipeline"].get("headless", False)
+        self.display_interval_s = self.config.get("pipeline", {}).get("display_interval_s", 0.5)
+        self.display_frame_interval = self.config.get("pipeline", {}).get("display_frame_interval", 5)
+        self.headless = self.config.get("pipeline", {}).get("headless", False)
 
         from networktables_publisher import NetworkTablesPublisher
         self.nt_publisher = NetworkTablesPublisher(
-            server=self.config["networktables"]["server"],
-            table_name=self.config["networktables"]["table"]
+            server=self.config.get("networktables", {}).get("server", "10.92.2.2"),
+            table_name=self.config.get("networktables", {}).get("table", "SmartDashboard")
         )
 
-        self.controls = self.config["controls"]
-        self.key_bindings = {k: tuple(v) for k, v in self.config["key_bindings"].items()}
+        self.controls = self.config.get("controls", {})
+        self.key_bindings = {k: tuple(v) for k, v in self.config.get("key_bindings", {}).items()}
         self.manual_mode = False
 
         from camera_manager import CameraManager
@@ -109,8 +111,8 @@ class AprilTagDetector:
                 frame = self.camera_manager.get_frame()
                 if frame is None:
                     self.logger.warning(f"Frame {self.frame_count}: No valid frame received")
-                    self.nt_publisher.publish_robot_location(None, float('nan'), float('nan'), self.frame_count)
-                    time.sleep(0.1)  # Avoid busy loop
+                    self.nt_publisher.publish_robot_location(None, float('nan'), self.frame_count)
+                    time.sleep(0.1)
                     continue
 
                 self.frame_queue.clear()
@@ -124,7 +126,7 @@ class AprilTagDetector:
                     self.logger.debug(f"Frame acquisition time: {(current_time - start_time)*1000:.1f}ms, FPS: {self.fps:.1f}")
                 else:
                     self.logger.debug("Skipped blurry frame")
-                    self.nt_publisher.publish_robot_location(None, float('nan'), float('nan'), self.frame_count)
+                    self.nt_publisher.publish_robot_location(None, float('nan'), self.frame_count)
 
                 if self.frame_queue:
                     process_start = time.time()
@@ -135,7 +137,7 @@ class AprilTagDetector:
 
             except Exception as e:
                 self.logger.error(f"Error processing frame {self.frame_count}: {e}")
-                self.nt_publisher.publish_robot_location(None, float('nan'), float('nan'), self.frame_count)
+                self.nt_publisher.publish_robot_location(None, float('nan'), self.frame_count)
                 time.sleep(0.1)
 
     def detect_blur(self, frame):
@@ -197,11 +199,13 @@ class AprilTagDetector:
             [-half_size, -half_size, 0]
         ], dtype=np.float32)
 
+        self.valid_detections = []  # Reset valid detections
         for det in detections:
             tag_id = det.tag_id
             pose_t = det.pose_t.flatten()
             x, z = pose_t[0], pose_t[2]
             self.tag_positions[tag_id] = (x, z)
+            self.logger.debug(f"Tag {tag_id} relative position: x={x:.3f}m, z={z:.3f}m")
 
             try:
                 image_points = det.corners.astype(np.float32)
@@ -210,6 +214,20 @@ class AprilTagDetector:
                     flags=cv2.SOLVEPNP_IPPE_SQUARE
                 )
                 if success:
+                    reprojected_points, _ = cv2.projectPoints(
+                        obj_points, rvec, tvec, self.camera_matrix, self.dist_coeffs
+                    )
+                    reprojected_points = reprojected_points.reshape(-1, 2)
+                    detected_points = image_points.reshape(-1, 2)
+                    errors = np.linalg.norm(reprojected_points - detected_points, axis=1)
+                    mean_error = np.mean(errors)
+                    self.logger.debug(f"Tag {tag_id} reprojection error: {mean_error:.2f} pixels")
+
+                    if mean_error > self.reprojection_error_threshold:
+                        self.logger.warning(f"Tag {tag_id} ignored due to high reprojection error: {mean_error:.2f} pixels")
+                        continue
+
+                    self.valid_detections.append(det)
                     R, _ = cv2.Rodrigues(rvec)
                     yaw = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
                     expected_yaw = self.tag_rotations.get(tag_id, 0.0)
@@ -226,11 +244,11 @@ class AprilTagDetector:
                 self.tag_yaws[tag_id] = 0.0
                 self.logger.error(f"Tag {tag_id} solvePnP error: {e}")
 
-        self.nt_publisher.publish_tag_data(detections, frame_count, self.tag_yaws)
+        self.nt_publisher.publish_tag_data(self.valid_detections, frame_count, self.tag_yaws)
 
         robot_positions = []
         yaws = []
-        for det in detections:
+        for det in self.valid_detections:
             tag_id = det.tag_id
             prob = 1.0 - det.decision_margin / 100.0
             self.logger.debug(f"Tag {tag_id} prob: {prob:.2f}")
@@ -252,14 +270,14 @@ class AprilTagDetector:
             smoothed_pos = np.mean(self.robot_position_history, axis=0)
             self.robot_position = (smoothed_pos[0], smoothed_pos[1])
             self.robot_yaw = np.mean(yaws) if yaws else 0.0
-            self.logger.info(f"Robot position: x={self.robot_position[0]:.3f}m, z={self.robot_position[1]:.3f}m, yaw={self.robot_yaw:.1f}°")
+            self.logger.info(f"Robot position: x={self.robot_position[0]:.3f}m, z={self.robot_yaw:.1f}°")
         else:
             self.logger.info("No valid tag detections for robot position")
             self.robot_position = None
             self.robot_yaw = None
 
-        self.nt_publisher.publish_robot_location(self.robot_position, self.robot_yaw, frame_count)
-        self.logger.debug(f"Frame {frame_count}: NetworkTables connected: {NetworkTables.isConnected()}")
+        self.nt_publisher.publish_robot_location(self.robot_position, self.robot_yaw, self.frame_count)
+        self.logger.debug(f"Frame {self.frame_count}: NetworkTables connected: {NetworkTables.isConnected()}")
 
     def draw_map(self):
         if self.headless:
@@ -267,27 +285,38 @@ class AprilTagDetector:
         map_frame = np.ones((self.map_height, self.map_width, 3), dtype=np.uint8) * 255
         center_x, center_z = self.map_width // 2, self.map_height // 2
 
-        for tag_id, (x, z) in self.tag_positions.items():
-            px = int(center_x + x * self.map_scale)
-            pz = int(center_z - z * self.map_scale)
-            if 0 <= px < self.map_width and 0 <= pz < self.map_height:
-                cv2.circle(map_frame, (px, pz), 5, (0, 0, 255), -1)
-                cv2.putText(map_frame, f"ID: {tag_id}", (px + 10, pz),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-                if tag_id in self.tag_yaws:
-                    yaw = self.tag_yaws[tag_id]
-                    angle_rad = np.radians(yaw)
-                    arrow_length = 15
-                    arrow_end_x = px + int(arrow_length * np.cos(angle_rad))
-                    arrow_end_z = pz - int(arrow_length * np.sin(angle_rad))
-                    cv2.arrowedLine(map_frame, (px, pz), (arrow_end_x, arrow_end_z), (255, 0, 0), 1)
+        for det in self.valid_detections:
+            tag_id = det.tag_id
+            if tag_id in self.tag_positions:
+                x, z = self.tag_positions[tag_id]
+                px = int(center_x + x * self.map_scale)
+                pz = int(center_z - z * self.map_scale)
+                self.logger.debug(f"Tag {tag_id} map position: x={x:.3f}m, z={z:.3f}m, px={px}, pz={pz}")
+                if 0 <= px < self.map_width and 0 <= pz < self.map_height:
+                    cv2.circle(map_frame, (px, pz), 5, (0, 0, 255), -1)
+                    cv2.putText(map_frame, f"ID: {tag_id}", (px + 10, pz),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    coord_text = f"({x:.2f}, {z:.2f})"
+                    cv2.putText(map_frame, coord_text, (px + 10, pz + 15),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                    if tag_id in self.tag_yaws:
+                        yaw = self.tag_yaws[tag_id]
+                        angle_rad = np.radians(yaw)
+                        arrow_length = 15
+                        arrow_end_x = px + int(arrow_length * np.cos(angle_rad))
+                        arrow_end_z = pz - int(arrow_length * np.sin(angle_rad))
+                        cv2.arrowedLine(map_frame, (px, pz), (arrow_end_x, arrow_end_z), (255, 0, 0), 1)
 
         if self.robot_position is not None:
             rx, rz = self.robot_position
             px = int(center_x + rx * self.map_scale)
             pz = int(center_z - rz * self.map_scale)
+            self.logger.debug(f"Robot map position: x={rx:.3f}m, z={rz:.3f}m, px={px}, pz={pz}")
             if 0 <= px < self.map_width and 0 <= pz < self.map_height:
                 cv2.circle(map_frame, (px, pz), 8, (0, 255, 0), -1)
+                coord_text = f"({rx:.2f}, {rz:.2f})"
+                cv2.putText(map_frame, coord_text, (px + 10, pz + 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
                 if self.robot_yaw is not None:
                     angle_rad = np.radians(self.robot_yaw)
                     arrow_length = 20
