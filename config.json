@@ -45,8 +45,8 @@
   },
   "tag_rotations": {
     "6": 180,
-    "9": 180,
-    "10": 180,
+    "9": 338,
+    "10": 338,
     "11": 90,
     "12": -90,
     "13": -90,
@@ -86,5 +86,10 @@
     "d": ["saturation", -1],
     "r": ["sharpness", 1],
     "f": ["sharpness", -1]
+  },
+  "magnetometer": {
+    "i2c_bus": 7,
+    "address": 80,
+    "calibrate_on_start": false
   }
 }

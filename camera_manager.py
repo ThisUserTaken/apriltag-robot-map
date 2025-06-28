@@ -1,109 +1,104 @@
-import numpy as np
-import cv2
-from depthai import Device, Pipeline, node, CameraBoardSocket, ColorCameraProperties, CameraControl
-from collections import deque
-import time
+import depthai as dai
 import logging
+import time
+import numpy as np
 
 class CameraManager:
     def __init__(self, config):
+        """Initialize CameraManager with configuration."""
+        logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger("CameraManager")
-        self.pipeline = Pipeline()
+        self.config = config
+        self.pipeline = None
         self.device = None
-        self.cam_node = None
-        self.control_queue = None
-        self.video_queue = None
-        self.frame_queue = deque(maxlen=1)
-        self.fps_target = config["pipeline"]["fps_target"]
-        self.camera_params = config["camera_params"]
-        self.dist_coeffs = np.array([-0.1, 0.05, 0.001, 0.001])
-        self.camera_matrix = np.array([
-            [self.camera_params['fx'], 0, self.camera_params['cx']],
-            [0, self.camera_params['fy'], self.camera_params['cy']],
-            [0, 0, 1]
-        ], dtype=np.float64)
-        self.setup_pipeline()
-        self.connected = False
+        self.rgb_queue = None
+        self.fps_target = self.config.get("pipeline", {}).get("fps_target", 30)
+        self.controls = self.config.get("controls", {})
+        self.running = False
+        self.cam_rgb = None  # Store ColorCamera node for control updates
 
-    def setup_pipeline(self):
-        self.cam_node = self.pipeline.create(node.ColorCamera)
-        xout = self.pipeline.create(node.XLinkOut)
-        control_in = self.pipeline.create(node.XLinkIn)
-        xout.setStreamName("video")
-        control_in.setStreamName("control")
+    def start(self):
+        """Start the camera pipeline and initialize the device."""
+        try:
+            # Create pipeline
+            self.pipeline = dai.Pipeline()
 
-        self.cam_node.setBoardSocket(CameraBoardSocket.CAM_A)
-        self.cam_node.setResolution(ColorCameraProperties.SensorResolution.THE_720_P)
-        self.cam_node.setFps(self.fps_target)
-        self.cam_node.setInterleaved(False)
-        self.cam_node.setColorOrder(ColorCameraProperties.ColorOrder.BGR)
-        self.cam_node.isp.link(xout.input)
-        control_in.out.link(self.cam_node.inputControl)
+            # Define RGB camera
+            self.cam_rgb = self.pipeline.create(dai.node.ColorCamera)
+            self.cam_rgb.setBoardSocket(dai.CameraBoardSocket.RGB)
+            self.cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_800_P)  # Use 1280x800
+            self.cam_rgb.setFps(self.fps_target)
+            self.cam_rgb.setVideoSize(1280, 800)
 
-        control = self.cam_node.initialControl
-        control.setAutoExposureEnable()
-        control.setAutoWhiteBalanceMode(CameraControl.AutoWhiteBalanceMode.AUTO)
-        control.setAntiBandingMode(CameraControl.AntiBandingMode.AUTO)
-        control.setManualExposure(5000, 400)
+            # Apply initial camera controls
+            self.apply_controls()
 
-    def start(self, max_retries=3, retry_delay=2):
-        """Initialize camera with retries."""
-        for attempt in range(max_retries):
-            try:
-                self.device = Device(self.pipeline)
-                self.control_queue = self.device.getInputQueue("control")
-                self.video_queue = self.device.getOutputQueue("video", maxSize=4, blocking=False)
-                self.connected = True
-                self.logger.info("Camera initialized successfully")
-                return True
-            except Exception as e:
-                self.logger.error(f"Camera initialization attempt {attempt + 1}/{max_retries} failed: {e}")
-                self.connected = False
-                if self.device:
-                    self.device.close()
-                time.sleep(retry_delay)
-        self.logger.error("Failed to initialize camera after max retries")
-        return False
+            # Create output
+            xout_rgb = self.pipeline.create(dai.node.XLinkOut)
+            xout_rgb.setStreamName("rgb")
+            self.cam_rgb.video.link(xout_rgb.input)
 
-    def stop(self):
-        if self.device:
-            self.device.close()
-            self.device = None
-            self.connected = False
-            self.logger.info("Camera stopped")
+            # Start the device
+            self.device = dai.Device(self.pipeline)
+            self.rgb_queue = self.device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+            self.running = True
+            self.logger.info("Camera initialized successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to start camera: {e}")
+            return False
+
+    def apply_controls(self):
+        """Apply camera controls (exposure, ISO, etc.)."""
+        if not self.cam_rgb:
+            self.logger.warning("Cannot apply controls: ColorCamera node not initialized")
+            return
+        try:
+            if self.controls.get("exposure", 0) > 0:
+                self.cam_rgb.initialControl.setManualExposure(self.controls["exposure"], self.controls.get("iso", 400))
+            else:
+                self.cam_rgb.initialControl.setAutoExposureEnable()
+            # Other controls (brightness, contrast, etc.) may require post-processing
+            self.logger.debug(f"Applied controls: {self.controls}")
+        except Exception as e:
+            self.logger.error(f"Error applying controls: {e}")
+
+    def update_controls(self, controls, manual_mode):
+        """Update camera controls dynamically."""
+        self.controls.update(controls)
+        if manual_mode:
+            self.apply_controls()
+        else:
+            # Reset to auto if manual mode is disabled
+            self.controls = {k: 0 for k in self.controls}
+            self.apply_controls()
+        self.logger.info(f"Updated controls: {self.controls}, manual_mode={manual_mode}")
 
     def get_frame(self):
-        """Get a frame, handling disconnections."""
-        if not self.connected:
-            self.logger.warning("Camera not connected, attempting to reconnect")
-            self.start()
+        """Retrieve the latest RGB frame."""
+        if not self.running or not self.rgb_queue:
+            self.logger.warning("Camera not running or queue not initialized")
             return None
-
         try:
-            in_frame = self.video_queue.tryGet()
-            if in_frame is not None:
-                frame = in_frame.getCvFrame()
-                if frame.shape[2] != 3 or frame.dtype != np.uint8:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_NV12)
-                frame = cv2.undistort(frame, self.camera_matrix, self.dist_coeffs)
+            frame_data = self.rgb_queue.get()
+            if frame_data:
+                frame = frame_data.getCvFrame()
                 return frame
             return None
         except Exception as e:
-            self.logger.error(f"Failed to get frame: {e}")
-            self.connected = False
-            self.stop()
+            self.logger.error(f"Error getting frame: {e}")
             return None
 
-    def update_controls(self, controls, manual_mode):
-        if self.device and manual_mode and self.control_queue:
+    def stop(self):
+        """Stop the camera and clean up resources."""
+        self.running = False
+        if self.device:
             try:
-                control = CameraControl()
-                if controls['exposure'] > 0 and controls['iso'] > 0:
-                    control.setManualExposure(controls['exposure'], controls['iso'])
-                control.setBrightness(controls['brightness'])
-                control.setContrast(controls['contrast'])
-                control.setSaturation(controls['saturation'])
-                control.setSharpness(controls['sharpness'])
-                self.control_queue.send(control)
+                self.device.close()
+                self.logger.info("Camera device closed")
             except Exception as e:
-                self.logger.error(f"Failed to update camera controls: {e}")
+                self.logger.error(f"Error closing camera device: {e}")
+        self.device = None
+        self.rgb_queue = None
+        self.pipeline = None
+        self.cam_rgb = None

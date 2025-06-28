@@ -13,7 +13,6 @@ class NetworkTablesPublisher:
         self._initialize_networktables()
 
     def _initialize_networktables(self, max_retries=5, retry_delay=2):
-        """Initialize NetworkTables with retries."""
         for attempt in range(max_retries):
             NetworkTables.initialize(server=self.server)
             time.sleep(1)
@@ -28,7 +27,6 @@ class NetworkTablesPublisher:
         self.table = NetworkTables.getTable(self.table_name)
 
     def publish_tag_data(self, detections, frame_count, tag_yaws):
-        """Publish detailed tag data to NetworkTables."""
         if not NetworkTables.isConnected():
             self.logger.warning(f"Frame {frame_count}: Not connected, skipping tag publish")
             return
@@ -41,7 +39,7 @@ class NetworkTablesPublisher:
             corners = det.corners.flatten().tolist()
             R = det.pose_R
             pitch = np.arctan2(-R[2, 0], np.sqrt(R[0, 0]**2 + R[1, 0]**2))
-            yaw = tag_yaws.get(tag_id, 0.0)  # Use solvePnP yaw
+            yaw = tag_yaws.get(tag_id, 0.0)
             roll = np.arctan2(R[2, 1], R[2, 2])
 
             tag_prefix = f"Tag_{tag_id}"
@@ -58,8 +56,7 @@ class NetworkTablesPublisher:
         self.table.putNumberArray("TagIDs", tag_ids)
         self.logger.debug(f"Frame {frame_count}: Published TagIDs: {tag_ids}")
 
-    def publish_robot_location(self, position, yaw, frame_count):
-        """Publish robot position (2D: x, z) and yaw to NetworkTables."""
+    def publish_robot_location(self, position, yaw, frame_count, magnetometer_direction=None):
         if not NetworkTables.isConnected():
             self.logger.warning(f"Frame {frame_count}: Not connected, skipping robot publish")
             return False
@@ -76,9 +73,17 @@ class NetworkTablesPublisher:
                 self.table.putNumber(f"{prefix}/z", float('nan'))
                 self.table.putNumber(f"{prefix}/yaw", float('nan'))
                 self.logger.debug(f"Frame {frame_count}: Published RobotPose: No valid position")
+
+            if magnetometer_direction is not None:
+                self.table.putNumber("Magnetometer/Direction", float(magnetometer_direction))
+                self.logger.debug(f"Frame {frame_count}: Published Magnetometer Direction: {magnetometer_direction:.1f}°")
+            else:
+                self.table.putNumber("Magnetometer/Direction", float('nan'))
+                self.logger.debug(f"Frame {frame_count}: Published Magnetometer Direction: No valid direction")
+
             return True
         except Exception as e:
-            self.logger.error(f"Frame {frame_count}: Failed to publish RobotPose: {e}")
+            self.logger.error(f"Frame {frame_count}: Failed to publish RobotPose or Magnetometer Direction: {e}")
             return False
 
     def shutdown(self):

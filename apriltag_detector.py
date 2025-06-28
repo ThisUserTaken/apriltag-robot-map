@@ -61,7 +61,7 @@ class AprilTagDetector:
         self.robot_yaw = None
         self.robot_position_history = deque(maxlen=5)
         self.reprojection_error_threshold = 5.0
-        self.valid_detections = []  # Store valid detections for map rendering
+        self.valid_detections = []
 
         self.display_interval_s = self.config.get("pipeline", {}).get("display_interval_s", 0.5)
         self.display_frame_interval = self.config.get("pipeline", {}).get("display_frame_interval", 5)
@@ -86,6 +86,18 @@ class AprilTagDetector:
         self.thread = None
         self.frame_queue = deque(maxlen=1)
 
+        from magnetometer import Magnetometer
+        self.magnetometer = None
+        try:
+            self.magnetometer = Magnetometer(self.config)
+            self.logger.info("Magnetometer initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize magnetometer: {e}")
+        self.ALPHA_YAW = 0.9
+        self.last_valid_tag_yaw = None
+        self.last_tag_yaw_time = 0
+        self.magnetometer_direction = 0.0
+
     def start(self):
         if not self.camera_manager.start():
             self.logger.error("Failed to start camera, aborting")
@@ -100,6 +112,8 @@ class AprilTagDetector:
             self.thread.join()
         self.camera_manager.stop()
         self.nt_publisher.shutdown()
+        if self.magnetometer:
+            self.magnetometer.shutdown()
         if not self.headless:
             cv2.destroyAllWindows()
 
@@ -114,6 +128,11 @@ class AprilTagDetector:
                     self.nt_publisher.publish_robot_location(None, float('nan'), self.frame_count)
                     time.sleep(0.1)
                     continue
+
+                if self.magnetometer:
+                    self.magnetometer_direction = self.magnetometer.get_yaw()
+                    self.nt_publisher.table.putNumber("Magnetometer/Direction", self.magnetometer_direction)
+                    self.logger.debug(f"Magnetometer direction: {self.magnetometer_direction:.1f}°")
 
                 self.frame_queue.clear()
                 if not self.detect_blur(frame):
@@ -199,7 +218,7 @@ class AprilTagDetector:
             [-half_size, -half_size, 0]
         ], dtype=np.float32)
 
-        self.valid_detections = []  # Reset valid detections
+        self.valid_detections = []
         for det in detections:
             tag_id = det.tag_id
             pose_t = det.pose_t.flatten()
@@ -237,6 +256,8 @@ class AprilTagDetector:
                     elif adjusted_yaw < -180:
                         adjusted_yaw += 360
                     self.tag_yaws[tag_id] = adjusted_yaw
+                    self.last_valid_tag_yaw = adjusted_yaw
+                    self.last_tag_yaw_time = time.time()
                 else:
                     self.tag_yaws[tag_id] = 0.0
                     self.logger.warning(f"Tag {tag_id} solvePnP failed")
@@ -258,26 +279,45 @@ class AprilTagDetector:
                 rel_x, rel_z = pose_t[0], pose_t[2]
                 global_coords = self.tag_locations[tag_id]
                 global_x, global_z = global_coords[0], global_coords[1]
-                robot_x = global_x - rel_x
+                robot_x = -(global_x - rel_x)
                 robot_z = global_z - rel_z
                 robot_positions.append([robot_x, robot_z])
                 if tag_id in self.tag_yaws:
                     yaws.append(self.tag_yaws[tag_id])
+
+        if yaws and (time.time() - self.last_tag_yaw_time) < 1.0:
+            tag_yaw = np.mean(yaws)
+            if self.magnetometer:
+                mag_yaw = self.magnetometer_direction
+                self.robot_yaw = self.ALPHA_YAW * tag_yaw + (1 - self.ALPHA_YAW) * mag_yaw
+            else:
+                self.robot_yaw = tag_yaw
+        elif self.magnetometer:
+            self.robot_yaw = self.magnetometer_direction
+        else:
+            self.robot_yaw = None
 
         if robot_positions:
             robot_pos = np.mean(robot_positions, axis=0)
             self.robot_position_history.append(robot_pos)
             smoothed_pos = np.mean(self.robot_position_history, axis=0)
             self.robot_position = (smoothed_pos[0], smoothed_pos[1])
-            self.robot_yaw = np.mean(yaws) if yaws else 0.0
-            self.logger.info(f"Robot position: x={self.robot_position[0]:.3f}m, z={self.robot_yaw:.1f}°")
+            self.logger.info(f"Robot position: x={self.robot_position[0]:.3f}m, z={self.robot_position[1]:.3f}m, yaw={self.robot_yaw:.1f}°, mag_direction={self.magnetometer_direction:.1f}°")
         else:
             self.logger.info("No valid tag detections for robot position")
             self.robot_position = None
-            self.robot_yaw = None
+            if self.magnetometer:
+                self.robot_yaw = self.magnetometer_direction
+            else:
+                self.robot_yaw = None
 
-        self.nt_publisher.publish_robot_location(self.robot_position, self.robot_yaw, self.frame_count)
-        self.logger.debug(f"Frame {self.frame_count}: NetworkTables connected: {NetworkTables.isConnected()}")
+        self.nt_publisher.publish_robot_location(
+            self.robot_position,
+            self.robot_yaw,
+            frame_count,
+            magnetometer_direction=self.magnetometer_direction if self.magnetometer else None
+        )
+        self.logger.debug(f"Frame {frame_count}: NetworkTables connected: {NetworkTables.isConnected()}")
 
     def draw_map(self):
         if self.headless:
@@ -318,11 +358,19 @@ class AprilTagDetector:
                 cv2.putText(map_frame, coord_text, (px + 10, pz + 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
                 if self.robot_yaw is not None:
-                    angle_rad = np.radians(self.robot_yaw)
+                    angle_rad = np.radians(-self.robot_yaw + 180 + 180)  # Add 180° to correct mirroring
                     arrow_length = 20
                     arrow_end_x = px + int(arrow_length * np.cos(angle_rad))
                     arrow_end_z = pz - int(arrow_length * np.sin(angle_rad))
                     cv2.arrowedLine(map_frame, (px, pz), (arrow_end_x, arrow_end_z), (0, 255, 0), 2)
+                if self.magnetometer and self.magnetometer_direction is not None:
+                    angle_rad = np.radians(-self.magnetometer_direction + 180 + 180)  # Add 180° to correct mirroring
+                    arrow_length = 15
+                    arrow_end_x = px + int(arrow_length * np.cos(angle_rad))
+                    arrow_end_z = pz - int(arrow_length * np.sin(angle_rad))
+                    cv2.arrowedLine(map_frame, (px, pz), (arrow_end_x, arrow_end_z), (255, 165, 0), 1)
+                    cv2.putText(map_frame, "Mag", (px + 10, pz + 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 165, 0), 1)
 
         cv2.line(map_frame, (center_x - 50, center_z), (center_x + 50, center_z), (0, 0, 0), 1)
         cv2.line(map_frame, (center_x, center_z - 50), (center_x, center_z + 50), (0, 0, 0), 1)
